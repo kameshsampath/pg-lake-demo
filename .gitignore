@@ -21,4 +21,6 @@ data/
 
 # pg_lake clone
 work/pg_lake/
-.task/
+
+# Demo script (personal notes)
+DEMO_SCRIPT.md

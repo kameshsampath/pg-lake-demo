@@ -173,11 +173,10 @@ task compose:up PG_MAJOR=18
 git clone <this-repo>
 cd pg-lake-demo
 
-# 2. Set up environment and sync dependencies
+# 2. Set up environment (creates .env, .aws/, syncs Python deps)
 task setup:all
-uv sync
 
-# 3. Start pg_lake (clones and builds on first run)
+# 3. Start pg_lake (clones and builds on first run ~10-15 min)
 task pg_lake:up
 
 # 4. Verify services are running
@@ -186,30 +185,15 @@ task check:all
 # 5. Upload sample data to LocalStack S3
 task s3:upload
 
-# 6. Run the demo
-task demo:all
+# 6. Run the demo steps (see Demo Walkthrough below)
+task demo:init           # Enable pg_lake extension
+task demo:secret         # Create S3 credentials
+task demo:foreign-table  # Query Parquet with zero schema
+task demo:iceberg        # Upgrade to Iceberg table
+task demo:modify         # ACID DELETE operation
 ```
 
 > **Note**: All `task` commands automatically load `.env`. For direct shell commands (e.g., `psql`, `aws`), run `source .env` first, or use `direnv allow` if you have direnv installed.
-
-## Project Structure
-
-```text
-pg-lake-demo/
-├── .aws.example/           # AWS config template for LocalStack
-├── .env.example            # Environment variables template
-├── scripts/
-│   ├── csv_to_parquet.py   # CSV to Parquet converter
-│   └── sql/
-│       ├── 01_init.sql           # Enable pg_lake extension
-│       ├── 02_create_foreign_table.sql  # Create foreign table (schema inference)
-│       ├── 03_upgrade_to_iceberg.sql  # Convert to Iceberg table
-│       └── 04_modify_iceberg.sql # ACID DELETE operations
-├── data/                   # Downloaded data files (gitignored)
-├── Taskfile.yaml           # Task runner configuration
-├── pyproject.toml          # Python project configuration
-└── README.md
-```
 
 ## Demo Walkthrough
 
@@ -348,12 +332,13 @@ task --list
 | Task | Description |
 |------|-------------|
 | `demo:secret` | Create wildlife S3 secret for S3 bucket |
-| `demo:reset` | Reset demo state for re-run (drops tables) |
+| `demo:reset` | Reset to clean state (drops tables, extension, resets S3) |
 | `demo:init` | Initialize pg_lake extension |
 | `demo:foreign-table` | Part 1 - Create foreign table for Parquet |
 | `demo:iceberg` | Part 2 - Upgrade to Iceberg |
 | `demo:modify` | Part 3 - ACID operations |
 | `demo:all` | Run full demo sequence |
+| `demo:teardown` | Full teardown (stop containers, remove volumes, clean data) |
 
 ### SQL Tasks
 
@@ -428,10 +413,25 @@ task compose:up PG_MAJOR=18
 
 ## Resources
 
-- [pg_lake GitHub](https://github.com/Snowflake-Labs/pg_lake)
+### Core Technologies
+
+- [pg_lake](https://github.com/Snowflake-Labs/pg_lake) - PostgreSQL extension for data lake integration
+- [Apache Iceberg](https://iceberg.apache.org/) - Open table format for large analytic datasets
+- [DuckDB](https://duckdb.org/) - In-process analytical database (powers pg_lake queries)
+- [Apache Parquet](https://parquet.apache.org/) - Columnar storage file format
+
+### Tools Used
+
+- [Task](https://taskfile.dev/) - Task runner / build tool (simpler alternative to Make)
+- [uv](https://docs.astral.sh/uv/) - Fast Python package installer and resolver
+- [LocalStack](https://localstack.cloud/) - Local AWS cloud emulator
+- [direnv](https://direnv.net/) - Environment variable manager (optional)
+- [Docker](https://www.docker.com/) - Container platform
+
+### Data
+
+- [Palmer Penguins Dataset](https://allisonhorst.github.io/palmerpenguins/) - Antarctic penguin measurements
 - [pg_lake Local Development Guide](https://github.com/Snowflake-Labs/pg_lake/blob/main/docker/LOCAL_DEV.md)
-- [Palmer Penguins Dataset](https://allisonhorst.github.io/palmerpenguins/)
-- [Apache Iceberg](https://iceberg.apache.org/)
 
 ## Acknowledgments
 

@@ -43,6 +43,7 @@ tasks:
     cmds:
       - task: setup:env
       - task: setup:aws
+      - uv sync
       - direnv allow 2>/dev/null || true
 
   # =============================================================================
@@ -330,15 +331,22 @@ tasks:
         vars: { FILE: "scripts/sql/04_modify_iceberg.sql" }
 
   demo:reset:
-    desc: Reset demo state for re-run (drops tables)
+    desc: Reset demo to clean state (can restart from demo:init)
     preconditions:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
+      # Drop tables and extension
       - |
         docker exec $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE -c "
         DROP TABLE IF EXISTS penguins_iceberg;
-        DROP FOREIGN TABLE IF EXISTS penguins_raw;"
+        DROP FOREIGN TABLE IF EXISTS penguins_raw;
+        DROP EXTENSION IF EXISTS pg_lake CASCADE;"
+      # Clear S3 bucket and recreate empty
+      - uv run aws s3 rb s3://$S3_BUCKET --force 2>/dev/null || true
+      - uv run aws s3 mb s3://$S3_BUCKET
+      # Re-upload data
+      - task: s3:upload
 
   demo:all:
     desc: Run full demo sequence
@@ -349,3 +357,9 @@ tasks:
       - task: demo:foreign-table
       - task: demo:iceberg
       - task: demo:modify
+
+  demo:teardown:
+    desc: Full teardown (reset + stop containers + remove volumes)
+    cmds:
+      - task: pg_lake:teardown
+      - task: data:clean
