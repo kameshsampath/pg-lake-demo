@@ -279,17 +279,16 @@ tasks:
     cmds:
       - printf '\033c' 2>/dev/null || true
       - |
-        # Get metadata location from iceberg_tables, then query snapshots via DuckDB
+        # Get metadata location from PostgreSQL, then query snapshots via DuckDB
         METADATA=$(docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -t -A -c \
           "SELECT metadata_location FROM iceberg_tables WHERE table_name = '{{.TABLE}}';")
         if [ -z "$METADATA" ]; then
           echo "ERROR: Table '{{.TABLE}}' not found in iceberg_tables"
           exit 1
         fi
-        echo "=== ICEBERG SNAPSHOTS for {{.TABLE}} ==="
-        echo ""
-        docker exec $PG_CONTAINER psql -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER -c \
-          "SELECT sequence_number as seq, snapshot_id, timestamp_ms as created_at FROM iceberg_snapshots('$METADATA') ORDER BY sequence_number;"
+        # Substitute metadata path into SQL and run via DuckDB
+        export METADATA_LOCATION="$METADATA"
+        envsubst < scripts/sql/list_snapshots.sql | docker exec -i $PG_CONTAINER psql -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
 
   iceberg:list-history:
     desc: List transaction history (metadata versions and deletion queue)
@@ -298,35 +297,7 @@ tasks:
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
       - printf '\033c' 2>/dev/null || true
-      - |
-        echo "=== CURRENT & PREVIOUS METADATA ==="
-        docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -c "
-        SELECT 
-            'Current' as version,
-            regexp_replace(metadata_location, '.*/', '') as metadata_file
-        FROM iceberg_tables WHERE table_name = 'penguins_iceberg'
-        UNION ALL
-        SELECT 
-            'Previous' as version,
-            regexp_replace(previous_metadata_location, '.*/', '') as metadata_file
-        FROM iceberg_tables WHERE table_name = 'penguins_iceberg' AND previous_metadata_location IS NOT NULL;"
-        echo ""
-        echo "=== DELETION QUEUE (older versions, requires 2+ transactions) ==="
-        docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -c "
-        SELECT 
-            d.orphaned_at as expired_at,
-            CASE 
-                WHEN extract(epoch from now() - d.orphaned_at) < 60 
-                    THEN round(extract(epoch from now() - d.orphaned_at)) || ' sec ago'
-                WHEN extract(epoch from now() - d.orphaned_at) < 3600 
-                    THEN round(extract(epoch from now() - d.orphaned_at) / 60) || ' min ago'
-                ELSE round(extract(epoch from now() - d.orphaned_at) / 3600, 1) || ' hours ago'
-            END as age,
-            regexp_replace(d.path, '.*/', '') as metadata_file
-        FROM lake_engine.deletion_queue d
-        JOIN iceberg_tables t ON d.path LIKE regexp_replace(t.metadata_location, '/metadata/.*', '') || '/%'
-        WHERE t.table_name = 'penguins_iceberg' AND d.path LIKE '%.metadata.json'
-        ORDER BY d.orphaned_at DESC LIMIT 5;"
+      - docker exec -i $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE < scripts/sql/list_history.sql
 
   # =============================================================================
   # Demo tasks (demo:*)
