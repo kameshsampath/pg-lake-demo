@@ -34,7 +34,8 @@ docker --version
 docker compose version
 ```
 
-> **Important**: Allocate at least 8GB RAM to Docker (16GB recommended).
+> [!IMPORTANT]
+> Allocate at least 8GB RAM to Docker (16GB recommended).
 > Docker Desktop → Settings → Resources → Memory
 
 #### Git
@@ -132,7 +133,8 @@ sudo apt install direnv
 eval "$(direnv hook zsh)"  # or bash
 ```
 
-> **Note**: If not using direnv, run `source .env` before using direct shell commands (e.g., `psql`, `aws`). Taskfile commands work without this.
+> [!TIP]
+> If not using direnv, run `source .env` before using direct shell commands (e.g., `psql`, `aws`). Taskfile commands work without this.
 
 ### Build and Start pg_lake
 
@@ -193,7 +195,8 @@ task demo:iceberg        # Upgrade to Iceberg table
 task demo:modify         # ACID DELETE operation
 ```
 
-> **Note**: All `task` commands automatically load `.env`. For direct shell commands (e.g., `psql`, `aws`), run `source .env` first, or use `direnv allow` if you have direnv installed.
+> [!NOTE]
+> All `task` commands automatically load `.env`. For direct shell commands (e.g., `psql`, `aws`), run `source .env` first, or use `direnv allow` if you have direnv installed.
 
 ## Demo Walkthrough
 
@@ -225,7 +228,8 @@ OPTIONS (path 's3://wildlife/raw/penguins.parquet');
 SELECT * FROM penguins_raw LIMIT 5;
 ```
 
-> **Note**: The empty `()` triggers automatic schema inference - no need to define columns!
+> [!TIP]
+> The empty `()` triggers automatic schema inference - no need to define columns!
 
 ### Step 3: Upgrade to Iceberg Table
 
@@ -360,55 +364,82 @@ task --list
 | `iceberg:list-tables` | List all Iceberg tables |
 | `iceberg:list-snapshots` | List snapshots for penguins_iceberg (time travel history) |
 
-> **Tip**: Use `task iceberg:list-snapshots TABLE=my_table` to query a different table.
+> [!TIP]
+> Use `task iceberg:list-snapshots TABLE=my_table` to query a different table.
 
 ## Configuration
 
-Environment variables are stored in `.env` (copy from `.env.example`):
+Environment variables are stored in `.env` (created from `.env.example` by `task setup:all`).
 
-```bash
-# Data paths
-DATA_DIR=./data
-PENGUINS_CSV_URL=https://raw.githubusercontent.com/dataprofessor/code/master/streamlit/part3/penguins_cleaned.csv
+### Data Paths
 
-# S3/LocalStack
-S3_BUCKET=wildlife
-S3_PARQUET_KEY=raw/penguins.parquet
-AWS_ENDPOINT_URL=http://localhost:4566
-AWS_DEFAULT_REGION=us-east-1
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATA_DIR` | `./data` | Local directory for downloaded files |
+| `PENGUINS_CSV_URL` | GitHub URL | Source URL for penguins dataset |
 
-# Postgres
-PG_CONTAINER=pg_lake
-DB_USER=postgres
-DB_NAME=postgres
-```
+### S3 / LocalStack
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `S3_BUCKET` | `wildlife` | S3 bucket name for demo data |
+| `S3_PARQUET_KEY` | `raw/penguins.parquet` | S3 key for Parquet file |
+| `AWS_ENDPOINT_URL` | `http://localhost:4566` | LocalStack endpoint (host) |
+| `LOCALSTACK_ENDPOINT` | `localstack:4566` | LocalStack endpoint (Docker internal) |
+| `AWS_DEFAULT_REGION` | `us-east-1` | AWS region |
+| `AWS_ACCESS_KEY_ID` | `test` | LocalStack dummy credentials |
+| `AWS_SECRET_ACCESS_KEY` | `test` | LocalStack dummy credentials |
+
+### PostgreSQL
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PGHOST` | `localhost` | PostgreSQL host |
+| `PGPORT` | `5432` | PostgreSQL port |
+| `PGUSER` | `postgres` | PostgreSQL user |
+| `PGDATABASE` | `postgres` | PostgreSQL database |
+| `PG_CONTAINER` | `pg_lake` | Docker container name |
+
+### psql Options
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PSQL_OPTS` | `-e` | psql flags (`-e` echoes queries, `-a` echoes all input) |
+
+> [!TIP]
+> Set `PSQL_OPTS=` (empty) to disable query echo, or `PSQL_OPTS=-a` to echo comments too.
 
 ## Troubleshooting
 
 ### Cannot connect to PostgreSQL
 
-Ensure pg_lake services are running:
+> [!WARNING]
+> Ensure pg_lake services are running before attempting to connect.
 
 ```bash
-cd /path/to/pg_lake/docker
-docker-compose ps
+task check:pg
+# or
+docker ps | grep pg_lake
 ```
 
 ### S3 upload fails
 
-Verify LocalStack is running:
+> [!WARNING]
+> LocalStack must be running for S3 operations.
 
 ```bash
+task check:localstack
+# or
 curl http://localhost:4566/_localstack/health
 ```
 
 ### Extension not found
 
-Make sure you built pg_lake with the correct PostgreSQL version:
+> [!IMPORTANT]
+> Make sure you built pg_lake with PostgreSQL 18.
 
 ```bash
-cd /path/to/pg_lake/docker
-task compose:up PG_MAJOR=18
+task pg_lake:up  # Uses PG_MAJOR=18 by default
 ```
 
 ## Resources
