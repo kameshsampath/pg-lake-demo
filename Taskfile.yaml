@@ -1,0 +1,263 @@
+version: "3"
+
+dotenv: [".env"]
+
+vars:
+  # Derived paths (computed from env vars)
+  PENGUINS_CSV: "$DATA_DIR/penguins.csv"
+  PENGUINS_PARQUET: "$DATA_DIR/penguins.parquet"
+  # pg_lake
+  PG_LAKE_DIR: ./work/pg_lake
+  PG_LAKE_REPO: https://github.com/Snowflake-Labs/pg_lake.git
+  PG_MAJOR: "18"
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  # =============================================================================
+  # Setup tasks (setup:*)
+  # =============================================================================
+
+  setup:aws:
+    desc: Set up local AWS config for LocalStack
+    cmds:
+      - cp -r .aws.example .aws
+      - echo "Created .aws/ directory with LocalStack config"
+    status:
+      - test -d .aws
+
+  setup:env:
+    desc: Create .env from .env.example
+    cmds:
+      - cp .env.example .env
+      - echo "Created .env file"
+    status:
+      - test -f .env
+
+  setup:all:
+    desc: Run all setup tasks
+    cmds:
+      - task: setup:env
+      - task: setup:aws
+      - direnv allow 2>/dev/null || true
+
+  # =============================================================================
+  # pg_lake tasks (pg_lake:*)
+  # =============================================================================
+
+  pg_lake:clone:
+    desc: Clone pg_lake docker folder (sparse checkout)
+    cmds:
+      - rm -rf {{.PG_LAKE_DIR}}
+      - git clone --filter=blob:none --no-checkout --depth 1 {{.PG_LAKE_REPO}} {{.PG_LAKE_DIR}}
+      - |
+        cd {{.PG_LAKE_DIR}}
+        git sparse-checkout init --cone
+        git sparse-checkout set docker
+        git checkout
+      - echo "Cloned pg_lake/docker to {{.PG_LAKE_DIR}}"
+    status:
+      - test -f {{.PG_LAKE_DIR}}/docker/Taskfile.yml
+
+  pg_lake:up:
+    desc: Start pg_lake services (PostgreSQL + LocalStack)
+    deps: [pg_lake:clone]
+    cmds:
+      - cd {{.PG_LAKE_DIR}}/docker && task compose:up PG_MAJOR={{.PG_MAJOR}}
+
+  pg_lake:down:
+    desc: Stop pg_lake services
+    cmds:
+      - cd {{.PG_LAKE_DIR}}/docker && task compose:down PG_MAJOR={{.PG_MAJOR}}
+
+  pg_lake:logs:
+    desc: View pg_lake service logs
+    cmds:
+      - cd {{.PG_LAKE_DIR}}/docker && task compose:logs PG_MAJOR={{.PG_MAJOR}}
+
+  pg_lake:teardown:
+    desc: Stop pg_lake and remove volumes
+    cmds:
+      - cd {{.PG_LAKE_DIR}}/docker && task compose:teardown PG_MAJOR={{.PG_MAJOR}}
+
+  # =============================================================================
+  # Data tasks (data:*)
+  # =============================================================================
+
+  data:download:
+    desc: Download penguins_cleaned.csv from GitHub
+    cmds:
+      - mkdir -p $DATA_DIR
+      - curl -fsSL -o {{.PENGUINS_CSV}} $PENGUINS_CSV_URL
+    sources:
+      - Taskfile.yaml
+    generates:
+      - "{{.PENGUINS_CSV}}"
+
+  data:convert:
+    desc: Convert penguins CSV to Parquet format
+    deps: [data:download]
+    cmds:
+      - uv run python scripts/csv_to_parquet.py {{.PENGUINS_CSV}} {{.PENGUINS_PARQUET}}
+    sources:
+      - "{{.PENGUINS_CSV}}"
+      - scripts/csv_to_parquet.py
+    generates:
+      - "{{.PENGUINS_PARQUET}}"
+
+  data:penguins:
+    desc: Download penguins CSV and convert to Parquet
+    cmds:
+      - task: data:download
+      - task: data:convert
+
+  data:clean:
+    desc: Remove downloaded and generated data files
+    cmds:
+      - rm -f {{.PENGUINS_CSV}} {{.PENGUINS_PARQUET}}
+
+  # =============================================================================
+  # S3 tasks (s3:*) - LocalStack
+  # =============================================================================
+
+  s3:create-bucket:
+    desc: Create S3 bucket in LocalStack
+    preconditions:
+      - sh: curl -sf $AWS_ENDPOINT_URL/_localstack/health > /dev/null 2>&1
+        msg: "LocalStack is not running. Run: task pg_lake:up"
+    cmds:
+      - uv run aws s3 mb s3://$S3_BUCKET 2>/dev/null || true
+    status:
+      - uv run aws s3 ls s3://$S3_BUCKET 2>/dev/null
+
+  s3:upload:
+    desc: Upload data files to LocalStack S3 bucket
+    deps: [s3:create-bucket, data:convert]
+    cmds:
+      - uv run aws s3 cp {{.PENGUINS_CSV}} s3://$S3_BUCKET/raw/
+      - uv run aws s3 cp {{.PENGUINS_PARQUET}} s3://$S3_BUCKET/$S3_PARQUET_KEY
+
+  s3:list:
+    desc: List files in LocalStack S3 bucket
+    cmds:
+      - uv run aws s3 ls s3://$S3_BUCKET/ --recursive
+
+  s3:list-buckets:
+    desc: List all S3 buckets in LocalStack
+    cmds:
+      - uv run aws s3 ls
+
+  # =============================================================================
+  # Health check tasks (check:*)
+  # =============================================================================
+
+  check:pg:
+    desc: Check if pg_lake PostgreSQL is running
+    cmds:
+      - |
+        if ! docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"; then
+          echo "ERROR: Container '$PG_CONTAINER' is not running"
+          echo ""
+          echo "Start pg_lake first:"
+          echo "  task pg_lake:up"
+          exit 1
+        fi
+      - |
+        if ! docker exec $PG_CONTAINER pg_isready -U $PGUSER -d $PGDATABASE -q; then
+          echo "ERROR: PostgreSQL is not accepting connections"
+          exit 1
+        fi
+      - echo "PostgreSQL is running and accepting connections"
+    silent: true
+
+  check:localstack:
+    desc: Check if LocalStack is running
+    cmds:
+      - |
+        if ! curl -sf $AWS_ENDPOINT_URL/_localstack/health > /dev/null 2>&1; then
+          echo "ERROR: LocalStack is not running at $AWS_ENDPOINT_URL"
+          echo ""
+          echo "Start pg_lake first:"
+          echo "  task pg_lake:up"
+          exit 1
+        fi
+      - echo "LocalStack is running"
+    silent: true
+
+  check:s3:
+    desc: Check if S3 operations work (create/delete test bucket)
+    cmds:
+      - |
+        TEST_BUCKET="pg-lake-demo-health-check-$$"
+        echo "Testing S3 operations with bucket: $TEST_BUCKET"
+        if ! uv run aws s3 mb s3://$TEST_BUCKET > /dev/null 2>&1; then
+          echo "ERROR: Failed to create S3 bucket"
+          exit 1
+        fi
+        if ! uv run aws s3 rb s3://$TEST_BUCKET > /dev/null 2>&1; then
+          echo "ERROR: Failed to delete S3 bucket"
+          exit 1
+        fi
+        echo "S3 operations working"
+    silent: true
+
+  check:all:
+    desc: Check if all required services are running
+    cmds:
+      - task: check:pg
+      - task: check:localstack
+      - task: check:s3
+      - echo ""
+      - echo "All services are healthy!"
+
+  # =============================================================================
+  # SQL tasks (sql:*)
+  # =============================================================================
+
+  sql:run:
+    desc: "Run a SQL file (Usage: task sql:run FILE=scripts/sql/01_init.sql)"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - docker exec -i $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE < {{.FILE}}
+
+  # =============================================================================
+  # Demo tasks (demo:*)
+  # =============================================================================
+
+  demo:init:
+    desc: Initialize pg_lake extension
+    cmds:
+      - task: sql:run
+        vars: { FILE: "scripts/sql/01_init.sql" }
+
+  demo:parquet:
+    desc: "Part 1 - Scan raw Parquet file (zero schema)"
+    cmds:
+      - task: sql:run
+        vars: { FILE: "scripts/sql/02_scan_parquet.sql" }
+
+  demo:iceberg:
+    desc: "Part 2 - Upgrade to Iceberg table"
+    cmds:
+      - task: sql:run
+        vars: { FILE: "scripts/sql/03_upgrade_to_iceberg.sql" }
+
+  demo:modify:
+    desc: "Part 3 - ACID operations (DELETE)"
+    cmds:
+      - task: sql:run
+        vars: { FILE: "scripts/sql/04_modify_iceberg.sql" }
+
+  demo:all:
+    desc: Run full demo sequence
+    cmds:
+      - task: check:all
+      - task: demo:init
+      - task: demo:parquet
+      - task: demo:iceberg
+      - task: demo:modify

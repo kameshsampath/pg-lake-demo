@@ -1,0 +1,12 @@
+# AWS CLI config for LocalStack
+# Copy this directory to .aws/ to use: cp -r .aws.example .aws
+
+[default]
+region = us-east-1
+output = json
+endpoint_url = http://localhost:4566
+
+[profile localstack]
+region = us-east-1
+output = json
+endpoint_url = http://localhost:4566
