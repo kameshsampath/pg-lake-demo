@@ -330,6 +330,14 @@ tasks:
       - task: sql:run
         vars: { FILE: "scripts/sql/04_modify_iceberg.sql" }
 
+  demo:export:
+    desc: "Part 4 - Export to S3 (COPY TO)"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - envsubst < scripts/sql/05_export_to_s3.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
+
   demo:reset:
     desc: Reset demo to clean state (can restart from demo:init)
     preconditions:
@@ -357,6 +365,7 @@ tasks:
       - task: demo:foreign-table
       - task: demo:iceberg
       - task: demo:modify
+      - task: demo:export
 
   demo:teardown:
     desc: Full teardown (reset + stop containers + remove volumes)

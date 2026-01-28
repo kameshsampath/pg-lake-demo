@@ -193,6 +193,7 @@ task demo:secret         # Create S3 credentials
 task demo:foreign-table  # Query Parquet with zero schema
 task demo:iceberg        # Upgrade to Iceberg table
 task demo:modify         # ACID DELETE operation
+task demo:export         # Export query results to S3
 ```
 
 > [!NOTE]
@@ -271,6 +272,29 @@ SELECT count(*) FROM penguins_iceberg WHERE species = 'Chinstrap';
 -- Returns: 0
 ```
 
+### Step 5: Export to S3
+
+```bash
+task demo:export
+```
+
+Export any PostgreSQL query result directly to S3 as Parquet - shareable with any tool!
+
+```sql
+-- Export Adelie penguins to S3
+COPY (SELECT * FROM penguins_iceberg WHERE species = 'Adelie') 
+TO 's3://wildlife/exports/adelie_penguins.parquet';
+
+-- Export a summary report
+COPY (
+    SELECT species, island, count(*), avg(body_mass_g) 
+    FROM penguins_iceberg GROUP BY species, island
+) TO 's3://wildlife/exports/penguin_summary.parquet';
+```
+
+> [!TIP]
+> Run `task s3:list` to see the exported files. Anyone with S3 access can read these with Spark, DuckDB, Python, etc.
+
 ### Run Full Demo
 
 ```bash
@@ -341,6 +365,7 @@ task --list
 | `demo:foreign-table` | Part 1 - Create foreign table for Parquet |
 | `demo:iceberg` | Part 2 - Upgrade to Iceberg |
 | `demo:modify` | Part 3 - ACID operations |
+| `demo:export` | Part 4 - Export to S3 (COPY TO) |
 | `demo:all` | Run full demo sequence |
 | `demo:teardown` | Full teardown (stop containers, remove volumes, clean data) |
 
