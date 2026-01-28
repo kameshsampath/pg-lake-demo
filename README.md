@@ -8,7 +8,7 @@ This demo uses the Palmer Penguins dataset to demonstrate:
 
 1. **Zero-schema Parquet scanning** - Create foreign tables that automatically infer schema from Parquet files
 2. **Iceberg table creation** - Promote raw Parquet files to managed Iceberg tables
-3. **ACID operations** - Perform DELETE operations on lake data with full transactional support
+3. **ACID operations** - Perform DELETE and UPDATE operations on lake data with full transactional support
 4. **Time travel** - Access historical data versions within the retention period
 5. **Export to S3** - Write query results back to the data lake as Parquet
 
@@ -197,6 +197,7 @@ task demo:iceberg        # Upgrade to Iceberg table
 task demo:modify         # ACID DELETE operation
 task demo:time-travel    # Access deleted data via time travel
 task demo:export         # Export query results to S3
+task demo:update         # (Optional) UPDATE operation
 ```
 
 > [!NOTE]
@@ -277,6 +278,9 @@ SELECT count(*) FROM penguins_iceberg WHERE species = 'Chinstrap';
 
 ### Step 5: Time Travel
 
+> [!IMPORTANT]
+> **deletion_queue behavior**: After a transaction commits, `previous_metadata_location` updates immediately. However, `deletion_queue` only populates after 2+ transactions commit. Use `previous_metadata_location` for time travel after a single change.
+
 ```bash
 task demo:time-travel
 ```
@@ -284,20 +288,20 @@ task demo:time-travel
 Access historical data! The deleted Chinstrap penguins are still accessible within the retention period:
 
 ```sql
--- Query the deletion_queue to find historical versions
-SELECT orphaned_at, path FROM lake_engine.deletion_queue 
-WHERE table_name = 'penguins_iceberg'::regclass;
+-- Get the previous version's metadata path
+SELECT previous_metadata_location FROM iceberg_tables 
+WHERE table_name = 'penguins_iceberg';
 
 -- Create a foreign table pointing to historical metadata
-CREATE FOREIGN TABLE penguins_before_delete () SERVER pg_lake 
-OPTIONS (path '<metadata_path_from_deletion_queue>');
+CREATE FOREIGN TABLE penguins_time_travel () SERVER pg_lake 
+OPTIONS (path '<previous_metadata_location>');
 
 -- Chinstrap penguins are back!
-SELECT species, count(*) FROM penguins_before_delete GROUP BY species;
+SELECT species, count(*) FROM penguins_time_travel GROUP BY species;
 ```
 
 > [!NOTE]
-> **How it works**: Iceberg keeps old metadata files in `lake_engine.deletion_queue` for the retention period (default: 10 days). The `orphaned_at` timestamp tells you when that version was superseded.
+> **How it works**: After any change, `previous_metadata_location` in `iceberg_tables` points to the prior version. For older history (2+ transactions), check `lake_engine.deletion_queue`. Default retention: 10 days.
 
 ### Step 6: Export to S3
 
@@ -417,9 +421,10 @@ task --list
 |------|-------------|
 | `iceberg:list-tables` | List all Iceberg tables |
 | `iceberg:list-snapshots` | List snapshots for penguins_iceberg (time travel history) |
+| `iceberg:list-history` | List transaction history (current/previous metadata, deletion queue) |
 
 > [!TIP]
-> Use `task iceberg:list-snapshots TABLE=my_table` to query a different table.
+> `iceberg:list-snapshots` uses `lake_iceberg.snapshots()` - a native PostgreSQL function (no DuckDB routing needed).
 
 ## Configuration
 
