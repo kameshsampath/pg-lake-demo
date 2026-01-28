@@ -394,6 +394,7 @@ task --list
 | `demo:modify` | Part 3 - ACID operations |
 | `demo:time-travel` | Part 4 - Time travel to see deleted data |
 | `demo:export` | Part 5 - Export to S3 (COPY TO) |
+| `demo:update` | Part 6 (Optional) - UPDATE operation + shows deletion_queue |
 | `demo:all` | Run full demo sequence |
 | `demo:teardown` | Full teardown (stop containers, remove volumes, clean data) |
 

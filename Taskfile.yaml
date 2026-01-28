@@ -367,6 +367,15 @@ tasks:
       - printf '\033c' 2>/dev/null || true
       - envsubst < scripts/sql/06_export_to_s3.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
 
+  demo:update:
+    desc: "Part 6 (Optional) - UPDATE operation + shows deletion_queue"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - printf '\033c' 2>/dev/null || true
+      - docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE < scripts/sql/07_update_iceberg.sql
+
   demo:reset:
     desc: Reset demo to clean state (can restart from demo:init)
     preconditions:
