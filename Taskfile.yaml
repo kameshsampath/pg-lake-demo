@@ -385,16 +385,60 @@ tasks:
       - task: s3:upload
 
   demo:all:
-    desc: Run full demo sequence
+    desc: Run full demo sequence (with pauses for recording)
+    vars:
+      PAUSE: '{{.PAUSE | default "3"}}'  # seconds between steps, override with PAUSE=5
     cmds:
-      - task: check:all
-      - task: demo:secret
-      - task: demo:init
-      - task: demo:foreign-table
-      - task: demo:iceberg
-      - task: demo:modify
-      - task: demo:time-travel
-      - task: demo:export
+      - |
+        task check:all
+        sleep {{.PAUSE}}
+        task demo:secret
+        sleep {{.PAUSE}}
+        task demo:init
+        sleep {{.PAUSE}}
+        echo "────────────────────────────────────────────────────────────"
+        echo "ACT 1 - Zero-Schema Foreign Table"
+        echo "────────────────────────────────────────────────────────────"
+        sleep 1
+        task demo:foreign-table
+        sleep {{.PAUSE}}
+        echo "────────────────────────────────────────────────────────────"
+        echo "ACT 2 - Upgrade to Iceberg"
+        echo "────────────────────────────────────────────────────────────"
+        sleep 1
+        task demo:iceberg
+        sleep {{.PAUSE}}
+        echo "────────────────────────────────────────────────────────────"
+        echo "ACT 3 - ACID DELETE"
+        echo "────────────────────────────────────────────────────────────"
+        sleep 1
+        task demo:modify
+        sleep {{.PAUSE}}
+        echo "────────────────────────────────────────────────────────────"
+        echo "SNAPSHOTS - See what Iceberg recorded"
+        echo "────────────────────────────────────────────────────────────"
+        sleep 1
+        task iceberg:list-snapshots
+        sleep {{.PAUSE}}
+        echo "────────────────────────────────────────────────────────────"
+        echo "ACT 4 - Time Travel - Recover Deleted Data"
+        echo "────────────────────────────────────────────────────────────"
+        sleep 1
+        task demo:time-travel
+        sleep {{.PAUSE}}
+        echo "────────────────────────────────────────────────────────────"
+        echo "ACT 5 - Export to S3"
+        echo "────────────────────────────────────────────────────────────"
+        sleep 1
+        task demo:export
+        sleep {{.PAUSE}}
+        echo "────────────────────────────────────────────────────────────"
+        echo "EXPORTED FILES"
+        echo "────────────────────────────────────────────────────────────"
+        task s3:list
+        sleep 2
+        echo ""
+        echo "✓ Demo complete!"
 
   demo:teardown:
     desc: Full teardown (reset + stop containers + remove volumes)
