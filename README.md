@@ -117,9 +117,9 @@ sudo apt install postgresql-client
 psql --version
 ```
 
-#### direnv (Recommended)
+#### direnv (Optional)
 
-Automatically loads environment variables when entering the project directory.
+Automatically loads environment variables when entering the project directory. Not required - the Taskfile loads `.env` automatically.
 
 ```bash
 # macOS
@@ -131,6 +131,8 @@ sudo apt install direnv
 # Add to your shell (~/.zshrc or ~/.bashrc)
 eval "$(direnv hook zsh)"  # or bash
 ```
+
+> **Note**: If not using direnv, run `source .env` before using direct shell commands (e.g., `psql`, `aws`). Taskfile commands work without this.
 
 ### Build and Start pg_lake
 
@@ -171,25 +173,24 @@ task compose:up PG_MAJOR=18
 git clone <this-repo>
 cd pg-lake-demo
 
-# 2. Set up environment
+# 2. Set up environment and sync dependencies
 task setup:all
-direnv allow
-
-# 3. Sync Python dependencies
 uv sync
 
-# 4. Start pg_lake (clones and builds on first run)
+# 3. Start pg_lake (clones and builds on first run)
 task pg_lake:up
 
-# 5. Verify services are running
+# 4. Verify services are running
 task check:all
 
-# 6. Upload sample data to LocalStack S3
+# 5. Upload sample data to LocalStack S3
 task s3:upload
 
-# 7. Run the demo
+# 6. Run the demo
 task demo:all
 ```
+
+> **Note**: All `task` commands automatically load `.env`. For direct shell commands (e.g., `psql`, `aws`), run `source .env` first, or use `direnv allow` if you have direnv installed.
 
 ## Project Structure
 
@@ -235,7 +236,7 @@ Creates a foreign table that automatically infers the schema from the Parquet fi
 ```sql
 CREATE FOREIGN TABLE penguins_raw() 
 SERVER pg_lake 
-OPTIONS (path 's3://my-lake/raw/penguins.parquet');
+OPTIONS (path 's3://wildlife/raw/penguins.parquet');
 
 SELECT * FROM penguins_raw LIMIT 5;
 ```
@@ -253,7 +254,7 @@ Promotes the raw Parquet file to a fully managed Iceberg table:
 ```sql
 CREATE TABLE penguins_iceberg()
 USING ICEBERG
-WITH (load_from = 's3://my-lake/raw/penguins.parquet');
+WITH (load_from = 's3://wildlife/raw/penguins.parquet');
 
 -- Verify it's an Iceberg table
 SELECT catalog_name, table_namespace, table_name, metadata_location 
@@ -346,7 +347,8 @@ task --list
 
 | Task | Description |
 |------|-------------|
-| `demo:secret` | Create wildlife S3 secret for my-lake bucket |
+| `demo:secret` | Create wildlife S3 secret for S3 bucket |
+| `demo:reset` | Reset demo state for re-run (drops tables) |
 | `demo:init` | Initialize pg_lake extension |
 | `demo:foreign-table` | Part 1 - Create foreign table for Parquet |
 | `demo:iceberg` | Part 2 - Upgrade to Iceberg |
@@ -366,6 +368,15 @@ task --list
 |------|-------------|
 | `duckdb:list-secrets` | List all DuckDB secrets |
 
+### Iceberg Tasks
+
+| Task | Description |
+|------|-------------|
+| `iceberg:list-tables` | List all Iceberg tables |
+| `iceberg:list-snapshots` | List snapshots for penguins_iceberg (time travel history) |
+
+> **Tip**: Use `task iceberg:list-snapshots TABLE=my_table` to query a different table.
+
 ## Configuration
 
 Environment variables are stored in `.env` (copy from `.env.example`):
@@ -376,7 +387,7 @@ DATA_DIR=./data
 PENGUINS_CSV_URL=https://raw.githubusercontent.com/dataprofessor/code/master/streamlit/part3/penguins_cleaned.csv
 
 # S3/LocalStack
-S3_BUCKET=my-lake
+S3_BUCKET=wildlife
 S3_PARQUET_KEY=raw/penguins.parquet
 AWS_ENDPOINT_URL=http://localhost:4566
 AWS_DEFAULT_REGION=us-east-1

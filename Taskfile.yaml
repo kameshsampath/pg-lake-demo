@@ -1,6 +1,7 @@
 version: "3"
 
 dotenv: [".env"]
+silent: true  # Suppress command echoing by default (use --verbose to see commands)
 
 vars:
   # Derived paths (computed from env vars)
@@ -170,8 +171,7 @@ tasks:
           echo "ERROR: PostgreSQL is not accepting connections"
           exit 1
         fi
-      - echo "PostgreSQL is running and accepting connections"
-    silent: true
+        echo "PostgreSQL: OK"
 
   check:localstack:
     desc: Check if LocalStack is running
@@ -184,15 +184,13 @@ tasks:
           echo "  task pg_lake:up"
           exit 1
         fi
-      - echo "LocalStack is running"
-    silent: true
+        echo "LocalStack: OK"
 
   check:s3:
     desc: Check if S3 operations work (create/delete test bucket)
     cmds:
       - |
         TEST_BUCKET="pg-lake-demo-health-check-$$"
-        echo "Testing S3 operations with bucket: $TEST_BUCKET"
         if ! uv run aws s3 mb s3://$TEST_BUCKET > /dev/null 2>&1; then
           echo "ERROR: Failed to create S3 bucket"
           exit 1
@@ -201,8 +199,7 @@ tasks:
           echo "ERROR: Failed to delete S3 bucket"
           exit 1
         fi
-        echo "S3 operations working"
-    silent: true
+        echo "S3: OK"
 
   check:all:
     desc: Check if all required services are running
@@ -210,8 +207,6 @@ tasks:
       - task: check:pg
       - task: check:localstack
       - task: check:s3
-      - echo ""
-      - echo "All services are healthy!"
 
   # =============================================================================
   # SQL tasks (sql:*)
@@ -259,6 +254,40 @@ tasks:
         ORDER BY name;"
 
   # =============================================================================
+  # Iceberg tasks (iceberg:*)
+  # =============================================================================
+
+  iceberg:list-tables:
+    desc: List all Iceberg tables
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - |
+        docker exec $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE -c "
+        SELECT catalog_name, table_namespace, table_name, metadata_location 
+        FROM iceberg_tables;"
+
+  iceberg:list-snapshots:
+    desc: List Iceberg table snapshots (time travel history)
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    vars:
+      TABLE: '{{.TABLE | default "penguins_iceberg"}}'
+    cmds:
+      - |
+        # Get metadata location from iceberg_tables, then query snapshots via DuckDB
+        METADATA=$(docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -t -A -c \
+          "SELECT metadata_location FROM iceberg_tables WHERE table_name = '{{.TABLE}}';")
+        if [ -z "$METADATA" ]; then
+          echo "ERROR: Table '{{.TABLE}}' not found in iceberg_tables"
+          exit 1
+        fi
+        docker exec $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER -c \
+          "SELECT sequence_number, snapshot_id, timestamp_ms, manifest_list FROM iceberg_snapshots('$METADATA') ORDER BY sequence_number;"
+
+  # =============================================================================
   # Demo tasks (demo:*)
   # =============================================================================
 
@@ -299,6 +328,17 @@ tasks:
     cmds:
       - task: sql:run
         vars: { FILE: "scripts/sql/04_modify_iceberg.sql" }
+
+  demo:reset:
+    desc: Reset demo state for re-run (drops tables)
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - |
+        docker exec $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE -c "
+        DROP TABLE IF EXISTS penguins_iceberg;
+        DROP FOREIGN TABLE IF EXISTS penguins_raw;"
 
   demo:all:
     desc: Run full demo sequence

@@ -7,6 +7,9 @@ CREATE TABLE penguins_iceberg()
 USING ICEBERG
 WITH (load_from = 's3://${S3_BUCKET}/raw/*.parquet');
 
+-- Show row count loaded
+SELECT count(*) AS rows_loaded FROM penguins_iceberg;
+
 -- Inspect the structure
 \d penguins_iceberg
 
