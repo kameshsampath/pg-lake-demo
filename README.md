@@ -9,6 +9,8 @@ This demo uses the Palmer Penguins dataset to demonstrate:
 1. **Zero-schema Parquet scanning** - Create foreign tables that automatically infer schema from Parquet files
 2. **Iceberg table creation** - Promote raw Parquet files to managed Iceberg tables
 3. **ACID operations** - Perform DELETE operations on lake data with full transactional support
+4. **Time travel** - Access historical data versions within the retention period
+5. **Export to S3** - Write query results back to the data lake as Parquet
 
 ## Prerequisites
 
@@ -193,6 +195,7 @@ task demo:secret         # Create S3 credentials
 task demo:foreign-table  # Query Parquet with zero schema
 task demo:iceberg        # Upgrade to Iceberg table
 task demo:modify         # ACID DELETE operation
+task demo:time-travel    # Access deleted data via time travel
 task demo:export         # Export query results to S3
 ```
 
@@ -272,7 +275,31 @@ SELECT count(*) FROM penguins_iceberg WHERE species = 'Chinstrap';
 -- Returns: 0
 ```
 
-### Step 5: Export to S3
+### Step 5: Time Travel
+
+```bash
+task demo:time-travel
+```
+
+Access historical data! The deleted Chinstrap penguins are still accessible within the retention period:
+
+```sql
+-- Query the deletion_queue to find historical versions
+SELECT orphaned_at, path FROM lake_engine.deletion_queue 
+WHERE table_name = 'penguins_iceberg'::regclass;
+
+-- Create a foreign table pointing to historical metadata
+CREATE FOREIGN TABLE penguins_before_delete () SERVER pg_lake 
+OPTIONS (path '<metadata_path_from_deletion_queue>');
+
+-- Chinstrap penguins are back!
+SELECT species, count(*) FROM penguins_before_delete GROUP BY species;
+```
+
+> [!NOTE]
+> **How it works**: Iceberg keeps old metadata files in `lake_engine.deletion_queue` for the retention period (default: 10 days). The `orphaned_at` timestamp tells you when that version was superseded.
+
+### Step 6: Export to S3
 
 ```bash
 task demo:export
@@ -365,7 +392,8 @@ task --list
 | `demo:foreign-table` | Part 1 - Create foreign table for Parquet |
 | `demo:iceberg` | Part 2 - Upgrade to Iceberg |
 | `demo:modify` | Part 3 - ACID operations |
-| `demo:export` | Part 4 - Export to S3 (COPY TO) |
+| `demo:time-travel` | Part 4 - Time travel to see deleted data |
+| `demo:export` | Part 5 - Export to S3 (COPY TO) |
 | `demo:all` | Run full demo sequence |
 | `demo:teardown` | Full teardown (stop containers, remove volumes, clean data) |
 

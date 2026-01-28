@@ -277,6 +277,7 @@ tasks:
     vars:
       TABLE: '{{.TABLE | default "penguins_iceberg"}}'
     cmds:
+      - printf '\033c' 2>/dev/null || true
       - |
         # Get metadata location from iceberg_tables, then query snapshots via DuckDB
         METADATA=$(docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -t -A -c \
@@ -285,8 +286,47 @@ tasks:
           echo "ERROR: Table '{{.TABLE}}' not found in iceberg_tables"
           exit 1
         fi
-        docker exec $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER -c \
-          "SELECT sequence_number, snapshot_id, timestamp_ms, manifest_list FROM iceberg_snapshots('$METADATA') ORDER BY sequence_number;"
+        echo "=== ICEBERG SNAPSHOTS for {{.TABLE}} ==="
+        echo ""
+        docker exec $PG_CONTAINER psql -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER -c \
+          "SELECT sequence_number as seq, snapshot_id, timestamp_ms as created_at FROM iceberg_snapshots('$METADATA') ORDER BY sequence_number;"
+
+  iceberg:list-history:
+    desc: List transaction history (metadata versions and deletion queue)
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - printf '\033c' 2>/dev/null || true
+      - |
+        echo "=== CURRENT & PREVIOUS METADATA ==="
+        docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -c "
+        SELECT 
+            'Current' as version,
+            regexp_replace(metadata_location, '.*/', '') as metadata_file
+        FROM iceberg_tables WHERE table_name = 'penguins_iceberg'
+        UNION ALL
+        SELECT 
+            'Previous' as version,
+            regexp_replace(previous_metadata_location, '.*/', '') as metadata_file
+        FROM iceberg_tables WHERE table_name = 'penguins_iceberg' AND previous_metadata_location IS NOT NULL;"
+        echo ""
+        echo "=== DELETION QUEUE (older versions, requires 2+ transactions) ==="
+        docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -c "
+        SELECT 
+            d.orphaned_at as expired_at,
+            CASE 
+                WHEN extract(epoch from now() - d.orphaned_at) < 60 
+                    THEN round(extract(epoch from now() - d.orphaned_at)) || ' sec ago'
+                WHEN extract(epoch from now() - d.orphaned_at) < 3600 
+                    THEN round(extract(epoch from now() - d.orphaned_at) / 60) || ' min ago'
+                ELSE round(extract(epoch from now() - d.orphaned_at) / 3600, 1) || ' hours ago'
+            END as age,
+            regexp_replace(d.path, '.*/', '') as metadata_file
+        FROM lake_engine.deletion_queue d
+        JOIN iceberg_tables t ON d.path LIKE regexp_replace(t.metadata_location, '/metadata/.*', '') || '/%'
+        WHERE t.table_name = 'penguins_iceberg' AND d.path LIKE '%.metadata.json'
+        ORDER BY d.orphaned_at DESC LIMIT 5;"
 
   # =============================================================================
   # Demo tasks (demo:*)
@@ -298,6 +338,7 @@ tasks:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
+      - printf '\033c' 2>/dev/null || true
       - envsubst < scripts/sql/00_create_secret.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
 
   demo:init:
@@ -306,6 +347,7 @@ tasks:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
+      - printf '\033c' 2>/dev/null || true
       - envsubst < scripts/sql/01_init.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
 
   demo:foreign-table:
@@ -314,6 +356,7 @@ tasks:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
+      - printf '\033c' 2>/dev/null || true
       - envsubst < scripts/sql/02_create_foreign_table.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
 
   demo:iceberg:
@@ -322,21 +365,36 @@ tasks:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
+      - printf '\033c' 2>/dev/null || true
       - envsubst < scripts/sql/03_upgrade_to_iceberg.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
 
   demo:modify:
     desc: "Part 3 - ACID operations (DELETE)"
-    cmds:
-      - task: sql:run
-        vars: { FILE: "scripts/sql/04_modify_iceberg.sql" }
-
-  demo:export:
-    desc: "Part 4 - Export to S3 (COPY TO)"
     preconditions:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
-      - envsubst < scripts/sql/05_export_to_s3.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
+      - printf '\033c' 2>/dev/null || true
+      - docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE < scripts/sql/04_modify_iceberg.sql
+
+  demo:time-travel:
+    desc: "Part 4 - Time travel to see deleted data"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - printf '\033c' 2>/dev/null || true
+      # No PSQL_OPTS here - cleaner output without query echo
+      - envsubst < scripts/sql/05_time_travel.sql | docker exec -i $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE
+
+  demo:export:
+    desc: "Part 5 - Export to S3 (COPY TO)"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - printf '\033c' 2>/dev/null || true
+      - envsubst < scripts/sql/06_export_to_s3.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
 
   demo:reset:
     desc: Reset demo to clean state (can restart from demo:init)
@@ -349,6 +407,7 @@ tasks:
         docker exec $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE -c "
         DROP TABLE IF EXISTS penguins_iceberg;
         DROP FOREIGN TABLE IF EXISTS penguins_raw;
+        DROP FOREIGN TABLE IF EXISTS penguins_time_travel;
         DROP EXTENSION IF EXISTS pg_lake CASCADE;"
       # Clear S3 bucket and recreate empty
       - uv run aws s3 rb s3://$S3_BUCKET --force 2>/dev/null || true
@@ -365,6 +424,7 @@ tasks:
       - task: demo:foreign-table
       - task: demo:iceberg
       - task: demo:modify
+      - task: demo:time-travel
       - task: demo:export
 
   demo:teardown:
