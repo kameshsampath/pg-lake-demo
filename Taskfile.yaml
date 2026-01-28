@@ -218,34 +218,81 @@ tasks:
   # =============================================================================
 
   sql:run:
-    desc: "Run a SQL file (Usage: task sql:run FILE=scripts/sql/01_init.sql)"
+    desc: "Run SQL on PostgreSQL (Usage: task sql:run FILE=scripts/sql/01_init.sql)"
     preconditions:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
-      - docker exec -i $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE < {{.FILE}}
+      - docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE < {{.FILE}}
+
+  sql:run-duckdb:
+    desc: "Run SQL on DuckDB/pgduck_server (Usage: task sql:run-duckdb FILE=...)"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER < {{.FILE}}
+
+  # =============================================================================
+  # DuckDB tasks (duckdb:*)
+  # =============================================================================
+
+  duckdb:list-secrets:
+    desc: List all DuckDB secrets
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - echo "SELECT name, type, scope FROM duckdb_secrets();" | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
+
+  pg_lake:settings:
+    desc: Show pg_lake configuration settings
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - |
+        docker exec $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE -c "
+        SELECT name, setting, unit, short_desc 
+        FROM pg_settings 
+        WHERE name LIKE 'pg_lake%' 
+        ORDER BY name;"
 
   # =============================================================================
   # Demo tasks (demo:*)
   # =============================================================================
 
-  demo:init:
-    desc: Initialize pg_lake extension
+  demo:secret:
+    desc: Create wildlife S3 secret for $S3_BUCKET bucket
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
-      - task: sql:run
-        vars: { FILE: "scripts/sql/01_init.sql" }
+      - envsubst < scripts/sql/00_create_secret.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
 
-  demo:parquet:
-    desc: "Part 1 - Scan raw Parquet file (zero schema)"
+  demo:init:
+    desc: Initialize pg_lake extension and set default bucket
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
-      - task: sql:run
-        vars: { FILE: "scripts/sql/02_scan_parquet.sql" }
+      - envsubst < scripts/sql/01_init.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
+
+  demo:foreign-table:
+    desc: "Part 1 - Create foreign table for Parquet (schema inference)"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
+    cmds:
+      - envsubst < scripts/sql/02_create_foreign_table.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
 
   demo:iceberg:
     desc: "Part 2 - Upgrade to Iceberg table"
+    preconditions:
+      - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
+        msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
-      - task: sql:run
-        vars: { FILE: "scripts/sql/03_upgrade_to_iceberg.sql" }
+      - envsubst < scripts/sql/03_upgrade_to_iceberg.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
 
   demo:modify:
     desc: "Part 3 - ACID operations (DELETE)"
@@ -257,7 +304,8 @@ tasks:
     desc: Run full demo sequence
     cmds:
       - task: check:all
+      - task: demo:secret
       - task: demo:init
-      - task: demo:parquet
+      - task: demo:foreign-table
       - task: demo:iceberg
       - task: demo:modify

@@ -12,7 +12,67 @@ This demo uses the Palmer Penguins dataset to demonstrate:
 
 ## Prerequisites
 
-### Install Required Tools
+### System Requirements
+
+- Docker Desktop with 8GB+ RAM allocated (16GB recommended for building images)
+- macOS, Linux, or Windows with WSL2
+
+### Required Tools
+
+#### Docker
+
+Docker Desktop is required to run pg_lake and LocalStack containers.
+
+```bash
+# macOS
+brew install --cask docker
+
+# Linux - follow https://docs.docker.com/engine/install/
+
+# Verify installation
+docker --version
+docker compose version
+```
+
+> **Important**: Allocate at least 8GB RAM to Docker (16GB recommended).
+> Docker Desktop → Settings → Resources → Memory
+
+#### Git
+
+```bash
+# macOS
+brew install git
+
+# Linux (Debian/Ubuntu)
+sudo apt install git
+
+# Verify installation
+git --version
+```
+
+#### curl
+
+Usually pre-installed on macOS and Linux. Used for downloading files and health checks.
+
+```bash
+# Verify installation
+curl --version
+```
+
+#### gettext (for envsubst)
+
+Provides `envsubst` for environment variable substitution in SQL templates.
+
+```bash
+# macOS
+brew install gettext
+
+# Linux (Debian/Ubuntu) - usually pre-installed
+sudo apt install gettext
+
+# Verify installation
+envsubst --version
+```
 
 #### Task Runner (go-task)
 
@@ -22,20 +82,51 @@ brew install go-task
 
 # Linux
 sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+
+# Verify installation
+task --version
 ```
 
 #### Python and uv
 
+Python 3.12+ is required. We use `uv` for fast dependency management.
+
 ```bash
 # Install uv (Python package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Verify installation
+uv --version
 ```
 
-#### direnv (recommended)
+### Optional Tools
+
+#### psql (PostgreSQL Client)
+
+For interactive SQL sessions. The demo tasks use `docker exec` so this is optional.
+
+```bash
+# macOS
+brew install libpq
+brew link --force libpq
+
+# Linux (Debian/Ubuntu)
+sudo apt install postgresql-client
+
+# Verify installation
+psql --version
+```
+
+#### direnv (Recommended)
+
+Automatically loads environment variables when entering the project directory.
 
 ```bash
 # macOS
 brew install direnv
+
+# Linux (Debian/Ubuntu)
+sudo apt install direnv
 
 # Add to your shell (~/.zshrc or ~/.bashrc)
 eval "$(direnv hook zsh)"  # or bash
@@ -72,11 +163,6 @@ task compose:up PG_MAJOR=18
 - `pg_lake-postgres` - PostgreSQL 18 with pg_lake extensions (port 5432)
 - `pgduck-server` - DuckDB integration for query execution
 - `localstack` - S3-compatible storage (port 4566)
-
-### System Requirements
-
-- Docker Desktop with 8GB+ RAM allocated (16GB recommended for building images)
-- macOS, Linux, or Windows with WSL2
 
 ## Quick Start
 
@@ -115,7 +201,7 @@ pg-lake-demo/
 │   ├── csv_to_parquet.py   # CSV to Parquet converter
 │   └── sql/
 │       ├── 01_init.sql           # Enable pg_lake extension
-│       ├── 02_scan_parquet.sql   # Create foreign table (auto schema)
+│       ├── 02_create_foreign_table.sql  # Create foreign table (schema inference)
 │       ├── 03_upgrade_to_iceberg.sql  # Convert to Iceberg table
 │       └── 04_modify_iceberg.sql # ACID DELETE operations
 ├── data/                   # Downloaded data files (gitignored)
@@ -141,7 +227,7 @@ CREATE EXTENSION IF NOT EXISTS pg_lake CASCADE;
 ### Step 2: Scan Raw Parquet (Zero Schema)
 
 ```bash
-task demo:parquet
+task demo:foreign-table
 ```
 
 Creates a foreign table that automatically infers the schema from the Parquet file:
@@ -227,6 +313,7 @@ task --list
 | `pg_lake:down` | Stop pg_lake services |
 | `pg_lake:logs` | View pg_lake service logs |
 | `pg_lake:teardown` | Stop services and remove volumes |
+| `pg_lake:settings` | Show pg_lake configuration settings |
 
 ### Health Check Tasks
 
@@ -259,8 +346,9 @@ task --list
 
 | Task | Description |
 |------|-------------|
+| `demo:secret` | Create wildlife S3 secret for my-lake bucket |
 | `demo:init` | Initialize pg_lake extension |
-| `demo:parquet` | Part 1 - Scan raw Parquet |
+| `demo:foreign-table` | Part 1 - Create foreign table for Parquet |
 | `demo:iceberg` | Part 2 - Upgrade to Iceberg |
 | `demo:modify` | Part 3 - ACID operations |
 | `demo:all` | Run full demo sequence |
@@ -269,7 +357,14 @@ task --list
 
 | Task | Description |
 |------|-------------|
-| `sql:run FILE=<path>` | Run any SQL file |
+| `sql:run FILE=<path>` | Run SQL on PostgreSQL |
+| `sql:run-duckdb FILE=<path>` | Run SQL on DuckDB/pgduck_server |
+
+### DuckDB Tasks
+
+| Task | Description |
+|------|-------------|
+| `duckdb:list-secrets` | List all DuckDB secrets |
 
 ## Configuration
 
@@ -326,6 +421,11 @@ task compose:up PG_MAJOR=18
 - [pg_lake Local Development Guide](https://github.com/Snowflake-Labs/pg_lake/blob/main/docker/LOCAL_DEV.md)
 - [Palmer Penguins Dataset](https://allisonhorst.github.io/palmerpenguins/)
 - [Apache Iceberg](https://iceberg.apache.org/)
+
+## Acknowledgments
+
+- Thanks to [@dataprofessor](https://github.com/dataprofessor) for providing the cleaned Palmer Penguins dataset used in this demo
+- Thanks to [Allison Horst](https://allisonhorst.github.io/palmerpenguins/) for the original Palmer Penguins dataset
 
 ## License
 
