@@ -4,8 +4,7 @@
 -- Shows all snapshots (versions) for the penguins_iceberg table
 -- Each snapshot represents a point-in-time state of the table
 --
--- Note: METADATA_LOCATION is substituted via envsubst from the Taskfile
---       (iceberg_tables is a PostgreSQL view, not available in DuckDB)
+-- Uses lake_iceberg.snapshots() - native PostgreSQL function (no DuckDB needed)
 --
 -- Run via: task iceberg:list-snapshots
 -- =============================================================================
@@ -18,7 +17,9 @@ SELECT
     sequence_number as seq, 
     snapshot_id, 
     timestamp_ms as created_at
-FROM iceberg_snapshots('${METADATA_LOCATION}')
+FROM lake_iceberg.snapshots(
+    (SELECT metadata_location FROM iceberg_tables WHERE table_name = 'penguins_iceberg')
+)
 ORDER BY sequence_number;
 
 \echo ''

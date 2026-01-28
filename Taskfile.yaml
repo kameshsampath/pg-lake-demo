@@ -274,21 +274,10 @@ tasks:
     preconditions:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
-    vars:
-      TABLE: '{{.TABLE | default "penguins_iceberg"}}'
     cmds:
       - printf '\033c' 2>/dev/null || true
-      - |
-        # Get metadata location from PostgreSQL, then query snapshots via DuckDB
-        METADATA=$(docker exec $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE -t -A -c \
-          "SELECT metadata_location FROM iceberg_tables WHERE table_name = '{{.TABLE}}';")
-        if [ -z "$METADATA" ]; then
-          echo "ERROR: Table '{{.TABLE}}' not found in iceberg_tables"
-          exit 1
-        fi
-        # Substitute metadata path into SQL and run via DuckDB
-        export METADATA_LOCATION="$METADATA"
-        envsubst < scripts/sql/list_snapshots.sql | docker exec -i $PG_CONTAINER psql -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
+      # Uses lake_iceberg.snapshots() - native PostgreSQL function (no DuckDB needed)
+      - docker exec -i $PG_CONTAINER psql -U $PGUSER -d $PGDATABASE < scripts/sql/list_snapshots.sql
 
   iceberg:list-history:
     desc: List transaction history (metadata versions and deletion queue)
