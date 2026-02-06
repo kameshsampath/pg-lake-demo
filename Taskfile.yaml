@@ -1,7 +1,7 @@
 version: "3"
 
 dotenv: [".env"]
-silent: true  # Suppress command echoing by default (use --verbose to see commands)
+silent: true # Suppress command echoing by default (use --verbose to see commands)
 
 vars:
   # Derived paths (computed from env vars)
@@ -11,12 +11,190 @@ vars:
   PG_LAKE_DIR: ./work/pg_lake
   PG_LAKE_REPO: https://github.com/Snowflake-Labs/pg_lake.git
   PG_MAJOR: "18"
+  # Airgap mode - set to "true" for offline/no-internet operation
+  AIRGAP: '{{.AIRGAP | default "false"}}'
 
 tasks:
   default:
     desc: Show available tasks
     cmds:
       - task --list
+
+  # =============================================================================
+  # Airgap mode tasks (airgap:*)
+  # =============================================================================
+
+  airgap:check:
+    desc: Verify all prerequisites for airgap (offline) mode
+    cmds:
+      - |
+        echo "🔍 Checking airgap prerequisites..."
+        echo ""
+        ERRORS=0
+
+        # Check pg_lake docker folder
+        if [ -f "{{.PG_LAKE_DIR}}/docker/Taskfile.yml" ]; then
+          echo "✅ pg_lake docker folder: {{.PG_LAKE_DIR}}/docker"
+        else
+          echo "❌ pg_lake docker folder not found at {{.PG_LAKE_DIR}}/docker"
+          echo "   Run 'task pg_lake:clone' while online to fix this"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # Check data files
+        if [ -f "{{.PENGUINS_CSV}}" ]; then
+          echo "✅ Data file: {{.PENGUINS_CSV}}"
+        else
+          echo "❌ Data file not found: {{.PENGUINS_CSV}}"
+          echo "   Run 'task data:download' while online to fix this"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        if [ -f "{{.PENGUINS_PARQUET}}" ]; then
+          echo "✅ Data file: {{.PENGUINS_PARQUET}}"
+        else
+          echo "⚠️  Parquet file not found: {{.PENGUINS_PARQUET}}"
+          echo "   Will be created from CSV if needed"
+        fi
+
+        # Check Docker images
+        echo ""
+        echo "🐳 Checking Docker images..."
+
+        if docker images pg_lake:local --format '{{"{{"}}.Repository{{"}}"}}:{{"{{"}}.Tag{{"}}"}}' 2>/dev/null | grep -q "pg_lake:local"; then
+          echo "✅ Docker image: pg_lake:local"
+        else
+          echo "❌ Docker image not found: pg_lake:local"
+          echo "   Run 'task build:local PG_MAJOR={{.PG_MAJOR}}' in pg_lake/docker while online"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        if docker images pgduck-server:local --format '{{"{{"}}.Repository{{"}}"}}:{{"{{"}}.Tag{{"}}"}}' 2>/dev/null | grep -q "pgduck-server:local"; then
+          echo "✅ Docker image: pgduck-server:local"
+        else
+          echo "❌ Docker image not found: pgduck-server:local"
+          echo "   Run 'task build:local PG_MAJOR={{.PG_MAJOR}}' in pg_lake/docker while online"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        if docker images localstack/localstack --format '{{"{{"}}.Repository{{"}}"}}' 2>/dev/null | grep -q "localstack/localstack"; then
+          echo "✅ Docker image: localstack/localstack"
+        else
+          echo "❌ Docker image not found: localstack/localstack"
+          echo "   Run 'docker pull localstack/localstack' while online"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        # Check Python venv
+        echo ""
+        if [ -d ".venv" ]; then
+          echo "✅ Python venv: .venv"
+        else
+          echo "❌ Python venv not found: .venv"
+          echo "   Run 'uv sync' while online to fix this"
+          ERRORS=$((ERRORS + 1))
+        fi
+
+        echo ""
+        if [ $ERRORS -eq 0 ]; then
+          echo "🎉 All prerequisites met! You can run: task pg_lake:up AIRGAP=true"
+        else
+          echo "❌ $ERRORS prerequisite(s) missing. Fix them while online before going airgap."
+          exit 1
+        fi
+
+  airgap:up:
+    desc: Start services + upload data + init extension (full airgap setup)
+    cmds:
+      # Check data files exist
+      - |
+        if [ ! -f "$DATA_DIR/penguins.csv" ]; then
+          echo "❌ Data file not found: $DATA_DIR/penguins.csv"
+          exit 1
+        fi
+        if [ ! -f "$DATA_DIR/penguins.parquet" ]; then
+          echo "❌ Data file not found: $DATA_DIR/penguins.parquet"
+          exit 1
+        fi
+        echo "✅ Data files present"
+      # Start containers
+      - |
+        echo "🚀 Starting containers..."
+        cd {{.PG_LAKE_DIR}}/docker && PG_MAJOR={{.PG_MAJOR}} docker compose up -d --pull=never
+      # Wait for services to be healthy
+      - |
+        echo "⏳ Waiting for services..."
+        for i in $(seq 1 30); do
+          if curl -sf $AWS_ENDPOINT_URL/_localstack/health > /dev/null 2>&1; then
+            echo "✅ LocalStack ready"
+            break
+          fi
+          sleep 1
+        done
+      - |
+        for i in $(seq 1 30); do
+          if docker exec $PG_CONTAINER pg_isready -U $PGUSER -d $PGDATABASE -q 2>/dev/null; then
+            echo "✅ PostgreSQL ready"
+            break
+          fi
+          sleep 1
+        done
+      # Upload data to S3
+      - |
+        echo "📦 Uploading data to S3..."
+        uv run aws s3 mb s3://$S3_BUCKET 2>/dev/null || true
+        uv run aws s3 cp $DATA_DIR/penguins.csv s3://$S3_BUCKET/raw/
+        uv run aws s3 cp $DATA_DIR/penguins.parquet s3://$S3_BUCKET/$S3_PARQUET_KEY
+        echo "✅ Data uploaded"
+      # Create DuckDB secret for LocalStack
+      - |
+        echo "🔑 Creating S3 secret..."
+        envsubst < scripts/sql/00_create_secret.sql | docker exec -i $PG_CONTAINER psql -q -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER > /dev/null
+        echo "✅ Secret created"
+      # Initialize pg_lake extension
+      - |
+        echo "🧩 Initializing pg_lake extension..."
+        envsubst < scripts/sql/01_init.sql | docker exec -i $PG_CONTAINER psql -q -U $PGUSER -d $PGDATABASE > /dev/null
+        echo "✅ Extension initialized"
+      - echo ""
+      - echo "🎉 Airgap setup complete! Ready for demo."
+      - echo "Run{{":"}} task demo:foreign-table"
+
+  airgap:demo:
+    desc: Run full demo in airgap mode
+    cmds:
+      - task: demo:all
+        vars:
+          AIRGAP: "true"
+
+  airgap:reset:
+    desc: Reset demo to clean state (airgap-safe, re-uploads data)
+    cmds:
+      # Drop tables and extension
+      - |
+        echo "🗑️  Dropping tables and extension..."
+        docker exec $PG_CONTAINER psql -q -U $PGUSER -d $PGDATABASE -c "
+        DROP TABLE IF EXISTS penguins_iceberg;
+        DROP FOREIGN TABLE IF EXISTS penguins_raw;
+        DROP FOREIGN TABLE IF EXISTS penguins_time_travel;
+        DROP EXTENSION IF EXISTS pg_lake CASCADE;" 2>/dev/null || true
+      # Clear and recreate S3 bucket
+      - |
+        echo "📦 Resetting S3 bucket..."
+        uv run aws s3 rb s3://$S3_BUCKET --force 2>/dev/null || true
+        uv run aws s3 mb s3://$S3_BUCKET
+        uv run aws s3 cp $DATA_DIR/penguins.csv s3://$S3_BUCKET/raw/
+        uv run aws s3 cp $DATA_DIR/penguins.parquet s3://$S3_BUCKET/$S3_PARQUET_KEY
+      # Re-create secret and init extension
+      - |
+        echo "🔑 Re-creating S3 secret..."
+        envsubst < scripts/sql/00_create_secret.sql | docker exec -i $PG_CONTAINER psql -q -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER > /dev/null
+      - |
+        echo "🧩 Re-initializing pg_lake extension..."
+        envsubst < scripts/sql/01_init.sql | docker exec -i $PG_CONTAINER psql -q -U $PGUSER -d $PGDATABASE > /dev/null
+      - echo ""
+      - echo "✅ Reset complete! Ready for demo."
+      - echo "Run{{":"}} task demo{{":"}}foreign-table"
 
   # =============================================================================
   # Setup tasks (setup:*)
@@ -43,7 +221,12 @@ tasks:
     cmds:
       - task: setup:env
       - task: setup:aws
-      - uv sync
+      - |
+        if [ "{{.AIRGAP}}" = "true" ]; then
+          echo "🔒 Airgap mode: skipping uv sync (using existing .venv)"
+        else
+          uv sync
+        fi
       - direnv allow 2>/dev/null || true
 
   # =============================================================================
@@ -68,7 +251,14 @@ tasks:
     desc: Start pg_lake services (PostgreSQL + LocalStack)
     deps: [pg_lake:clone]
     cmds:
-      - cd {{.PG_LAKE_DIR}}/docker && task compose:up PG_MAJOR={{.PG_MAJOR}}
+      - |
+        if [ "{{.AIRGAP}}" = "true" ]; then
+          echo "🔒 Airgap mode: using pre-built images (no build step)"
+          cd {{.PG_LAKE_DIR}}/docker && PG_MAJOR={{.PG_MAJOR}} docker compose up -d --pull=never
+          echo "Services started! Check logs with 'task pg_lake:logs'"
+        else
+          cd {{.PG_LAKE_DIR}}/docker && task compose:up PG_MAJOR={{.PG_MAJOR}}
+        fi
 
   pg_lake:down:
     desc: Stop pg_lake services
@@ -92,8 +282,19 @@ tasks:
   data:download:
     desc: Download penguins_cleaned.csv from GitHub
     cmds:
-      - mkdir -p $DATA_DIR
-      - curl -fsSL -o {{.PENGUINS_CSV}} $PENGUINS_CSV_URL
+      - |
+        if [ "{{.AIRGAP}}" = "true" ]; then
+          if [ -f "{{.PENGUINS_CSV}}" ]; then
+            echo "🔒 Airgap mode: using existing {{.PENGUINS_CSV}}"
+          else
+            echo "ERROR: Airgap mode but {{.PENGUINS_CSV}} not found!"
+            echo "Please copy penguins.csv to $DATA_DIR/ before running in airgap mode."
+            exit 1
+          fi
+        else
+          mkdir -p $DATA_DIR
+          curl -fsSL -o {{.PENGUINS_CSV}} $PENGUINS_CSV_URL
+        fi
     sources:
       - Taskfile.yaml
     generates:
@@ -101,9 +302,20 @@ tasks:
 
   data:convert:
     desc: Convert penguins CSV to Parquet format
-    deps: [data:download]
     cmds:
-      - uv run python scripts/csv_to_parquet.py {{.PENGUINS_CSV}} {{.PENGUINS_PARQUET}}
+      - |
+        if [ "{{.AIRGAP}}" = "true" ]; then
+          if [ -f "{{.PENGUINS_PARQUET}}" ]; then
+            echo "🔒 Airgap mode: using existing {{.PENGUINS_PARQUET}}"
+          else
+            echo "ERROR: Airgap mode but {{.PENGUINS_PARQUET}} not found!"
+            exit 1
+          fi
+        else
+          # Ensure CSV exists first (download if needed)
+          task data:download
+          uv run python scripts/csv_to_parquet.py {{.PENGUINS_CSV}} {{.PENGUINS_PARQUET}}
+        fi
     sources:
       - "{{.PENGUINS_CSV}}"
       - scripts/csv_to_parquet.py
@@ -239,7 +451,8 @@ tasks:
       - sh: docker ps --format '{{"{{"}}.Names{{"}}"}}' | grep -q "^${PG_CONTAINER}$"
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
-      - echo "SELECT name, type, scope FROM duckdb_secrets();" | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
+      - echo "SELECT name, type, scope FROM duckdb_secrets();" | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h
+        /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
 
   pg_lake:settings:
     desc: Show pg_lake configuration settings
@@ -299,7 +512,8 @@ tasks:
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
       - printf '\033c' 2>/dev/null || true
-      - envsubst < scripts/sql/00_create_secret.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
+      - envsubst < scripts/sql/00_create_secret.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -h
+        /home/postgres/pgduck_socket_dir -p 5332 -U $PGUSER
 
   demo:init:
     desc: Initialize pg_lake extension and set default bucket
@@ -317,7 +531,8 @@ tasks:
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
       - printf '\033c' 2>/dev/null || true
-      - envsubst < scripts/sql/02_create_foreign_table.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
+      - envsubst < scripts/sql/02_create_foreign_table.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d
+        $PGDATABASE
 
   demo:iceberg:
     desc: "Part 2 - Upgrade to Iceberg table"
@@ -326,7 +541,8 @@ tasks:
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
       - printf '\033c' 2>/dev/null || true
-      - envsubst < scripts/sql/03_upgrade_to_iceberg.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
+      - envsubst < scripts/sql/03_upgrade_to_iceberg.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d
+        $PGDATABASE
 
   demo:modify:
     desc: "Part 3 - ACID operations (DELETE)"
@@ -354,7 +570,8 @@ tasks:
         msg: "pg_lake container is not running. Run: task pg_lake:up"
     cmds:
       - printf '\033c' 2>/dev/null || true
-      - envsubst < scripts/sql/06_export_to_s3.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d $PGDATABASE
+      - envsubst < scripts/sql/06_export_to_s3.sql | docker exec -i $PG_CONTAINER psql $PSQL_OPTS -U $PGUSER -d
+        $PGDATABASE
 
   demo:update:
     desc: "Part 6 (Optional) - UPDATE operation + shows deletion_queue"
@@ -381,67 +598,79 @@ tasks:
       # Clear S3 bucket and recreate empty
       - uv run aws s3 rb s3://$S3_BUCKET --force 2>/dev/null || true
       - uv run aws s3 mb s3://$S3_BUCKET
-      # Re-upload data
-      - task: s3:upload
+      # Re-upload data (use airgap-safe method if in airgap mode)
+      - |
+        if [ "{{.AIRGAP}}" = "true" ]; then
+          task airgap:s3:upload
+        else
+          task s3:upload
+        fi
 
   demo:all:
     desc: Run full demo sequence (with pauses for recording)
-    vars:
-      PAUSE: '{{.PAUSE | default "3"}}'  # seconds between steps, override with PAUSE=5
+    env:
+      PSQL_OPTS: "" # No query echo for cleaner recording
     cmds:
       - |
         task check:all
-        sleep {{.PAUSE}}
+        sleep 2
         task demo:secret
-        sleep {{.PAUSE}}
+        sleep 1
         task demo:init
-        sleep {{.PAUSE}}
+        sleep 2
         echo "────────────────────────────────────────────────────────────"
         echo "ACT 1 - Zero-Schema Foreign Table"
         echo "────────────────────────────────────────────────────────────"
         sleep 1
         task demo:foreign-table
-        sleep {{.PAUSE}}
+        sleep 4
         echo "────────────────────────────────────────────────────────────"
         echo "ACT 2 - Upgrade to Iceberg"
         echo "────────────────────────────────────────────────────────────"
         sleep 1
         task demo:iceberg
-        sleep {{.PAUSE}}
+        sleep 4
         echo "────────────────────────────────────────────────────────────"
         echo "ACT 3 - ACID DELETE"
         echo "────────────────────────────────────────────────────────────"
         sleep 1
         task demo:modify
-        sleep {{.PAUSE}}
+        sleep 5
         echo "────────────────────────────────────────────────────────────"
         echo "SNAPSHOTS - See what Iceberg recorded"
         echo "────────────────────────────────────────────────────────────"
         sleep 1
         task iceberg:list-snapshots
-        sleep {{.PAUSE}}
+        sleep 4
         echo "────────────────────────────────────────────────────────────"
         echo "ACT 4 - Time Travel - Recover Deleted Data"
         echo "────────────────────────────────────────────────────────────"
         sleep 1
         task demo:time-travel
-        sleep {{.PAUSE}}
+        sleep 6
         echo "────────────────────────────────────────────────────────────"
         echo "ACT 5 - Export to S3"
         echo "────────────────────────────────────────────────────────────"
         sleep 1
         task demo:export
-        sleep {{.PAUSE}}
+        sleep 3
         echo "────────────────────────────────────────────────────────────"
         echo "EXPORTED FILES"
         echo "────────────────────────────────────────────────────────────"
         task s3:list
-        sleep 2
+        sleep 3
         echo ""
         echo "✓ Demo complete!"
 
   demo:teardown:
-    desc: Full teardown (reset + stop containers + remove volumes)
+    desc: Teardown containers + volumes (preserves data files for airgap)
+    cmds:
+      - task: pg_lake:teardown
+      - echo "✅ Containers stopped. Data files preserved in $DATA_DIR"
+
+  demo:teardown:full:
+    desc: Full teardown INCLUDING data files (breaks airgap - requires network to restore)
     cmds:
       - task: pg_lake:teardown
       - task: data:clean
+      - echo "⚠️  Data files removed. Run 'task data:download' to restore (requires network)."
