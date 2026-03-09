@@ -24,3 +24,5 @@ work/pg_lake/
 
 # Demo script (personal notes)
 DEMO_SCRIPT.md
+DEMO_CHEATSHEET.md
+!env.example
